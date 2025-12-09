@@ -1,0 +1,508 @@
+From 363d3b97e4c3db0a1a2dc902529f8f811effbbe7 Mon Sep 17 00:00:00 2001
+From: yuxuanchiadm <yuxuanchiadm@126.com>
+Date: Tue, 9 Dec 2025 16:26:34 +0800
+Subject: [PATCH] Implement netease support
+
+---
+ app/electron/src/session.js                   |   2 +
+ .../schemas/converter_settings.schema.json    |  22 ++++
+ app/ui/src/components/app.js                  |   2 +
+ .../settings/tab/converterSettingsTab.js      |  12 ++
+ .../main/java/com/hivemc/chunker/cli/CLI.java |  14 +++
+ .../chunker/cli/messenger/Messenger.java      |   2 +
+ .../messaging/request/ConvertRequest.java     | 110 +++++++++++-------
+ .../chunker/conversion/WorldConverter.java    |  30 +++++
+ .../conversion/encoding/base/Converter.java   |  14 +++
+ .../BedrockBlockEntityResolver.java           |   2 +-
+ .../entity/BedrockEntityResolver.java         |   2 +-
+ .../base/writer/BedrockColumnWriter.java      |  13 ++-
+ .../blockentity/JavaBlockEntityResolver.java  |   2 +-
+ .../legacy/JavaLegacyBlockEntityResolver.java |   2 +-
+ .../resolver/entity/JavaEntityResolver.java   |   2 +-
+ .../legacy/JavaLegacyEntityResolver.java      |   2 +-
+ 16 files changed, 185 insertions(+), 48 deletions(-)
+
+diff --git a/app/electron/src/session.js b/app/electron/src/session.js
+index 6957d20..72dd4fe 100644
+--- a/app/electron/src/session.js
++++ b/app/electron/src/session.js
+@@ -710,6 +710,8 @@ export class Session {
+             customIdentifiers: !data.hasOwnProperty("customIdentifiers") || data["customIdentifiers"],
+             skipBlockConnections: data.hasOwnProperty("blockConnections") && !data["blockConnections"],
+             enableCompact: !data.hasOwnProperty("enableCompact") || data["enableCompact"],
++            preserveUnknownEntities: !data.hasOwnProperty("preserveUnknownEntities") || data["preserveUnknownEntities"],
++            preserveUnknownBlockEntities: !data.hasOwnProperty("preserveUnknownBlockEntities") || data["preserveUnknownBlockEntities"],
+             discardEmptyChunks: data.hasOwnProperty("discardEmptyChunks") && data["discardEmptyChunks"],
+             preventYBiomeBlending: data.hasOwnProperty("preventYBiomeBlending") && data["preventYBiomeBlending"]
+         }
+diff --git a/app/ui/public/schemas/converter_settings.schema.json b/app/ui/public/schemas/converter_settings.schema.json
+index 23807af..aaf1466 100644
+--- a/app/ui/public/schemas/converter_settings.schema.json
++++ b/app/ui/public/schemas/converter_settings.schema.json
+@@ -12,6 +12,8 @@
+       "lootTableConversion": true,
+       "mapConversion": true,
+       "enableCompact": false,
++      "preserveUnknownEntities": true,
++      "preserveUnknownBlockEntities": true,
+       "discardEmptyChunks": false,
+       "preventYBiomeBlending": false
+     }
+@@ -78,6 +80,26 @@
+         true
+       ]
+     },
++    "preserveUnknownEntities": {
++      "type": "boolean",
++      "title": "Preserve Unknown Entities",
++      "description": "Whether unknown entities should be preserved.",
++      "default": true,
++      "examples": [
++        false,
++        true
++      ]
++    },
++    "preserveUnknownBlockEntities": {
++      "type": "boolean",
++      "title": "Preserve Unknown Block Entities",
++      "description": "Whether unknown block entities should be preserved.",
++      "default": true,
++      "examples": [
++        false,
++        true
++      ]
++    },
+     "discardEmptyChunks": {
+       "type": "boolean",
+       "title": "Discard Empty Chunks",
+diff --git a/app/ui/src/components/app.js b/app/ui/src/components/app.js
+index ef3e6ef..38d0034 100644
+--- a/app/ui/src/components/app.js
++++ b/app/ui/src/components/app.js
+@@ -23,6 +23,8 @@ export class App extends Component {
+         lootTableConversion: true,
+         mapConversion: true,
+         enableCompact: true,
++        preserveUnknownEntities: true,
++        preserveUnknownBlockEntities: true,
+         discardEmptyChunks: false,
+         preventYBiomeBlending: false
+     };
+diff --git a/app/ui/src/components/screen/settings/tab/converterSettingsTab.js b/app/ui/src/components/screen/settings/tab/converterSettingsTab.js
+index 3475f3e..ebf1b5f 100644
+--- a/app/ui/src/components/screen/settings/tab/converterSettingsTab.js
++++ b/app/ui/src/components/screen/settings/tab/converterSettingsTab.js
+@@ -51,6 +51,18 @@ export class ConverterSettingsTab extends Component {
+                 "description": "Whether converting in-game maps should be enabled.",
+                 "type": "Boolean"
+             },
++            {
++                "display": "Preserve Unknown Entities",
++                "name": "preserveUnknownEntities",
++                "description": "Whether unknown entities should be preserved.",
++                "type": "Boolean"
++            },
++            {
++                "display": "Preserve Unknown Block Entities",
++                "name": "preserveUnknownBlockEntities",
++                "description": "Whether unknown block entities should be preserved.",
++                "type": "Boolean"
++            },
+             {
+                 "display": "Discard Empty Chunks",
+                 "name": "discardEmptyChunks",
+diff --git a/cli/src/main/java/com/hivemc/chunker/cli/CLI.java b/cli/src/main/java/com/hivemc/chunker/cli/CLI.java
+index 406bbde..7ed035f 100644
+--- a/cli/src/main/java/com/hivemc/chunker/cli/CLI.java
++++ b/cli/src/main/java/com/hivemc/chunker/cli/CLI.java
+@@ -110,6 +110,18 @@ public class CLI implements Runnable {
+     )
+     private boolean keepOriginalNBT;
+ 
++    @CommandLine.Option(
++            names = {"--preserveUnknownEntities"},
++            description = "Whether unknown entities should be preserved in the output world."
++    )
++    private boolean preserveUnknownEntities;
++
++    @CommandLine.Option(
++            names = {"--preserveUnknownBlockEntities"},
++            description = "Whether unknown block entities should be preserved in the output world."
++    )
++    private boolean preserveUnknownBlockEntities;
++
+     /**
+      * Main entry point for the CLI
+      *
+@@ -272,6 +284,8 @@ public class CLI implements Runnable {
+ 
+             // Check for the original NBT option
+             worldConverter.setAllowNBTCopying(keepOriginalNBT);
++            worldConverter.setPreserveUnknownEntities(preserveUnknownEntities);
++            worldConverter.setPreserveUnknownBlockEntities(preserveUnknownBlockEntities);
+ 
+             // Create the reader / writer (note: converter settings cannot be set after this point)
+             Optional<? extends LevelReader> reader = EncodingType.findReader(inputDirectory, worldConverter);
+diff --git a/cli/src/main/java/com/hivemc/chunker/cli/messenger/Messenger.java b/cli/src/main/java/com/hivemc/chunker/cli/messenger/Messenger.java
+index 31e5f70..b72f56b 100644
+--- a/cli/src/main/java/com/hivemc/chunker/cli/messenger/Messenger.java
++++ b/cli/src/main/java/com/hivemc/chunker/cli/messenger/Messenger.java
+@@ -234,6 +234,8 @@ public class Messenger {
+                         worldConverter.setProcessItems(!convertRequest.isSkipItemConversion());
+                         worldConverter.setProcessColumnPreTransform(!convertRequest.isSkipBlockConnections());
+                         worldConverter.setLevelDBCompaction(convertRequest.isEnableCompact());
++                        worldConverter.setPreserveUnknownEntities(convertRequest.isPreserveUnknownEntities());
++                        worldConverter.setPreserveUnknownBlockEntities(convertRequest.isPreserveUnknownBlockEntities());
+                         worldConverter.setDiscardEmptyChunks(convertRequest.isDiscardEmptyChunks());
+                         worldConverter.setPreventYBiomeBlending(convertRequest.isPreventYBiomeBlending());
+                         worldConverter.setCustomIdentifiers(convertRequest.isCustomIdentifiers());
+diff --git a/cli/src/main/java/com/hivemc/chunker/cli/messenger/messaging/request/ConvertRequest.java b/cli/src/main/java/com/hivemc/chunker/cli/messenger/messaging/request/ConvertRequest.java
+index 9bc1acc..6f8a1c5 100644
+--- a/cli/src/main/java/com/hivemc/chunker/cli/messenger/messaging/request/ConvertRequest.java
++++ b/cli/src/main/java/com/hivemc/chunker/cli/messenger/messaging/request/ConvertRequest.java
+@@ -35,6 +35,8 @@ public class ConvertRequest extends BasicMessage implements InvokesWorldConverte
+     private final boolean skipItemConversion;
+     private final boolean skipBlockConnections;
+     private final boolean enableCompact;
++    private final boolean preserveUnknownEntities;
++    private final boolean preserveUnknownBlockEntities;
+     private final boolean discardEmptyChunks;
+     private final boolean preventYBiomeBlending;
+     private final boolean customIdentifiers;
+@@ -42,27 +44,29 @@ public class ConvertRequest extends BasicMessage implements InvokesWorldConverte
+     /**
+      * Create a new conversion request.
+      *
+-     * @param anonymousId            the session ID for the user.
+-     * @param inputPath              the input path on the current machine for the world.
+-     * @param outputPath             the output path to write the world to.
+-     * @param outputType             the output type to use for the world in the format FORMAT_MAJOR_MINOR_PATCH.
+-     * @param inputToOutputDimension mapping of dimension type to output dimension type. If the dimension isn't present
+-     *                               in the map, it won't be processed.
+-     * @param mappings               the mappings (null if not present) which are parsed as a MappingsFile.
+-     * @param nbtSettings            NBT settings (if present) which are merged with the original settings.
+-     * @param maps                   a list of maps, null if it should use the original maps.
+-     * @param copyNbt                true if NBT should be copied from the input world to the output.
+-     * @param pruningList            a list of pruning rules to run for each dimension.
+-     * @param skipMaps               whether in-game maps should be skipped.
+-     * @param skipLootTables         whether loot tables inside containers should be skipped.
+-     * @param skipItemConversion     whether air should be used instead of converting items.
+-     * @param customIdentifiers      whether custom identifiers should be read/written.
+-     * @param skipBlockConnections   whether data based on other chunks should be skipped.
+-     * @param enableCompact          whether the world should be compacted after conversion (Bedrock).
+-     * @param discardEmptyChunks     whether empty chunks should not be written.
+-     * @param preventYBiomeBlending  whether biomes should be prevented from blending (Java).
++     * @param anonymousId                   the session ID for the user.
++     * @param inputPath                     the input path on the current machine for the world.
++     * @param outputPath                    the output path to write the world to.
++     * @param outputType                    the output type to use for the world in the format FORMAT_MAJOR_MINOR_PATCH.
++     * @param inputToOutputDimension        mapping of dimension type to output dimension type. If the dimension isn't present
++     *                                      in the map, it won't be processed.
++     * @param mappings                      the mappings (null if not present) which are parsed as a MappingsFile.
++     * @param nbtSettings                   NBT settings (if present) which are merged with the original settings.
++     * @param maps                          a list of maps, null if it should use the original maps.
++     * @param copyNbt                       true if NBT should be copied from the input world to the output.
++     * @param pruningList                   a list of pruning rules to run for each dimension.
++     * @param skipMaps                      whether in-game maps should be skipped.
++     * @param skipLootTables                whether loot tables inside containers should be skipped.
++     * @param skipItemConversion            whether air should be used instead of converting items.
++     * @param customIdentifiers             whether custom identifiers should be read/written.
++     * @param skipBlockConnections          whether data based on other chunks should be skipped.
++     * @param enableCompact                 whether the world should be compacted after conversion (Bedrock).
++     * @param preserveUnknownEntities       whether unknown entities should be preserved.
++     * @param preserveUnknownBlockEntities  whether unknown block entities should be preserved.
++     * @param discardEmptyChunks            whether empty chunks should not be written.
++     * @param preventYBiomeBlending         whether biomes should be prevented from blending (Java).
+      */
+-    public ConvertRequest(UUID anonymousId, String inputPath, String outputPath, String outputType, @Nullable Map<Dimension, Dimension> inputToOutputDimension, @Nullable JsonObject mappings, @Nullable JsonObject nbtSettings, @Nullable JsonArray maps, boolean copyNbt, @Nullable DimensionPruningList pruningList, boolean skipMaps, boolean skipLootTables, boolean skipItemConversion, boolean customIdentifiers, boolean skipBlockConnections, boolean enableCompact, boolean discardEmptyChunks, boolean preventYBiomeBlending) {
++    public ConvertRequest(UUID anonymousId, String inputPath, String outputPath, String outputType, @Nullable Map<Dimension, Dimension> inputToOutputDimension, @Nullable JsonObject mappings, @Nullable JsonObject nbtSettings, @Nullable JsonArray maps, boolean copyNbt, @Nullable DimensionPruningList pruningList, boolean skipMaps, boolean skipLootTables, boolean skipItemConversion, boolean customIdentifiers, boolean skipBlockConnections, boolean enableCompact, boolean preserveUnknownEntities, boolean preserveUnknownBlockEntities, boolean discardEmptyChunks, boolean preventYBiomeBlending) {
+         this.anonymousId = anonymousId;
+         this.inputPath = inputPath;
+         this.outputPath = outputPath;
+@@ -79,6 +83,8 @@ public class ConvertRequest extends BasicMessage implements InvokesWorldConverte
+         this.customIdentifiers = customIdentifiers;
+         this.skipBlockConnections = skipBlockConnections;
+         this.enableCompact = enableCompact;
++        this.preserveUnknownEntities = preserveUnknownEntities;
++        this.preserveUnknownBlockEntities = preserveUnknownBlockEntities;
+         this.discardEmptyChunks = discardEmptyChunks;
+         this.preventYBiomeBlending = preventYBiomeBlending;
+     }
+@@ -86,28 +92,30 @@ public class ConvertRequest extends BasicMessage implements InvokesWorldConverte
+     /**
+      * Create a new conversion request.
+      *
+-     * @param requestId              the request ID to use.
+-     * @param anonymousId            the session ID for the user.
+-     * @param inputPath              the input path on the current machine for the world.
+-     * @param outputPath             the output path to write the world to.
+-     * @param outputType             the output type to use for the world in the format FORMAT_MAJOR_MINOR_PATCH.
+-     * @param inputToOutputDimension mapping of dimension type to output dimension type. If the dimension isn't present
+-     *                               in the map, it won't be processed.
+-     * @param mappings               the mappings (null if not present) which are parsed as a MappingsFile.
+-     * @param nbtSettings            NBT settings (if present) which are merged with the original settings.
+-     * @param maps                   a list of maps, null if it should use the original maps.
+-     * @param copyNbt                true if NBT should be copied from the input world to the output.
+-     * @param pruningList            a list of pruning rules to run for each dimension.
+-     * @param skipMaps               whether in-game maps should be skipped.
+-     * @param skipLootTables         whether loot tables inside containers should be skipped.
+-     * @param skipItemConversion     whether air should be used instead of converting items.
+-     * @param customIdentifiers      whether custom identifiers should be read/written.
+-     * @param skipBlockConnections   whether data based on other chunks should be skipped.
+-     * @param enableCompact          whether the world should be compacted after conversion (Bedrock).
+-     * @param discardEmptyChunks     whether empty chunks should not be written.
+-     * @param preventYBiomeBlending  whether biomes should be prevented from blending (Java).
++     * @param requestId                     the request ID to use.
++     * @param anonymousId                   the session ID for the user.
++     * @param inputPath                     the input path on the current machine for the world.
++     * @param outputPath                    the output path to write the world to.
++     * @param outputType                    the output type to use for the world in the format FORMAT_MAJOR_MINOR_PATCH.
++     * @param inputToOutputDimension        mapping of dimension type to output dimension type. If the dimension isn't present
++     *                                      in the map, it won't be processed.
++     * @param mappings                      the mappings (null if not present) which are parsed as a MappingsFile.
++     * @param nbtSettings                   NBT settings (if present) which are merged with the original settings.
++     * @param maps                          a list of maps, null if it should use the original maps.
++     * @param copyNbt                       true if NBT should be copied from the input world to the output.
++     * @param pruningList                   a list of pruning rules to run for each dimension.
++     * @param skipMaps                      whether in-game maps should be skipped.
++     * @param skipLootTables                whether loot tables inside containers should be skipped.
++     * @param skipItemConversion            whether air should be used instead of converting items.
++     * @param customIdentifiers             whether custom identifiers should be read/written.
++     * @param skipBlockConnections          whether data based on other chunks should be skipped.
++     * @param enableCompact                 whether the world should be compacted after conversion (Bedrock).
++     * @param preserveUnknownEntities       whether unknown entities should be preserved.
++     * @param preserveUnknownBlockEntities  whether unknown block entities should be preserved.
++     * @param discardEmptyChunks            whether empty chunks should not be written.
++     * @param preventYBiomeBlending         whether biomes should be prevented from blending (Java).
+      */
+-    public ConvertRequest(UUID requestId, UUID anonymousId, String inputPath, String outputPath, String outputType, @Nullable Map<Dimension, Dimension> inputToOutputDimension, @Nullable JsonObject mappings, @Nullable JsonObject nbtSettings, @Nullable JsonArray maps, boolean copyNbt, @Nullable DimensionPruningList pruningList, boolean skipMaps, boolean skipLootTables, boolean skipItemConversion, boolean customIdentifiers, boolean skipBlockConnections, boolean enableCompact, boolean discardEmptyChunks, boolean preventYBiomeBlending) {
++    public ConvertRequest(UUID requestId, UUID anonymousId, String inputPath, String outputPath, String outputType, @Nullable Map<Dimension, Dimension> inputToOutputDimension, @Nullable JsonObject mappings, @Nullable JsonObject nbtSettings, @Nullable JsonArray maps, boolean copyNbt, @Nullable DimensionPruningList pruningList, boolean skipMaps, boolean skipLootTables, boolean skipItemConversion, boolean customIdentifiers, boolean skipBlockConnections, boolean enableCompact, boolean preserveUnknownEntities, boolean preserveUnknownBlockEntities, boolean discardEmptyChunks, boolean preventYBiomeBlending) {
+         super(requestId);
+         this.anonymousId = anonymousId;
+         this.inputPath = inputPath;
+@@ -125,6 +133,8 @@ public class ConvertRequest extends BasicMessage implements InvokesWorldConverte
+         this.customIdentifiers = customIdentifiers;
+         this.skipBlockConnections = skipBlockConnections;
+         this.enableCompact = enableCompact;
++        this.preserveUnknownEntities = preserveUnknownEntities;
++        this.preserveUnknownBlockEntities = preserveUnknownBlockEntities;
+         this.discardEmptyChunks = discardEmptyChunks;
+         this.preventYBiomeBlending = preventYBiomeBlending;
+     }
+@@ -281,6 +291,24 @@ public class ConvertRequest extends BasicMessage implements InvokesWorldConverte
+         return enableCompact;
+     }
+ 
++    /**
++     * Whether unknown entities should be preserved.
++     *
++     * @return true if unknown entities should be preserved.
++     */
++    public boolean isPreserveUnknownEntities() {
++        return preserveUnknownEntities;
++    }
++
++    /**
++     * Whether unknown block entities should be preserved.
++     *
++     * @return true if unknown block entities should be preserved.
++     */
++    public boolean isPreserveUnknownBlockEntities() {
++        return preserveUnknownBlockEntities;
++    }
++
+     /**
+      * Whether empty chunks should be discarded instead of written.
+      *
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java b/cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java
+index 0079d9b..eacf6e6 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java
+@@ -86,6 +86,8 @@ public class WorldConverter implements Converter {
+     private boolean processLighting = true;
+     private boolean processColumnPreTransform = true;
+     private boolean allowNBTCopying = false;
++    private boolean preserveUnknownEntities = false;
++    private boolean preserveUnknownBlockEntities = false;
+     private boolean discardEmptyChunks = false;
+     private boolean preventYBiomeBlending = false;
+     private boolean customIdentifiers = true;
+@@ -228,6 +230,24 @@ public class WorldConverter implements Converter {
+         this.allowNBTCopying = allowNBTCopying;
+     }
+ 
++    /**
++     * Set whether unknown entities should be preserved.
++     *
++     * @param preserveUnknownEntities true if they should be preserved.
++     */
++    public void setPreserveUnknownEntities(boolean preserveUnknownEntities) {
++        this.preserveUnknownEntities = preserveUnknownEntities;
++    }
++
++    /**
++     * Set whether unknown block-entities should be preserved.
++     *
++     * @param preserveUnknownBlockEntities true if they should be preserved.
++     */
++    public void setPreserveUnknownBlockEntities(boolean preserveUnknownBlockEntities) {
++        this.preserveUnknownBlockEntities = preserveUnknownBlockEntities;
++    }
++
+     /**
+      * Set whether empty chunks should be removed.
+      *
+@@ -393,6 +413,16 @@ public class WorldConverter implements Converter {
+         return allowNBTCopying;
+     }
+ 
++    @Override
++    public boolean shouldPreserveUnknownEntities() {
++        return preserveUnknownEntities;
++    }
++
++    @Override
++    public boolean shouldPreserveUnknownBlockEntities() {
++        return preserveUnknownBlockEntities;
++    }
++
+     @Override
+     public boolean shouldAllowCustomIdentifiers() {
+         return customIdentifiers;
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/base/Converter.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/base/Converter.java
+index c59f1b3..0496871 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/base/Converter.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/base/Converter.java
+@@ -118,6 +118,20 @@ public interface Converter {
+      */
+     boolean shouldAllowNBTCopying();
+ 
++    /**
++     * Whether unknown entities should be preserved.
++     *
++     * @return true if unknown entities should be preserved.
++     */
++    boolean shouldPreserveUnknownEntities();
++
++    /**
++     * Whether unknown block entities should be preserved.
++     *
++     * @return true if unknown block entities should be preserved.
++     */
++    boolean shouldPreserveUnknownBlockEntities();
++
+     /**
+      * Whether custom identifiers should be processed.
+      *
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/blockentity/BedrockBlockEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/blockentity/BedrockBlockEntityResolver.java
+index 70f50f9..a049f19 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/blockentity/BedrockBlockEntityResolver.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/blockentity/BedrockBlockEntityResolver.java
+@@ -33,7 +33,7 @@ public class BedrockBlockEntityResolver extends BlockEntityResolver<BedrockResol
+      * @param resolvers the resolvers to use.
+      */
+     public BedrockBlockEntityResolver(Version version, BedrockResolvers resolvers) {
+-        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying());
++        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying() || resolvers.converter().shouldPreserveUnknownBlockEntities());
+     }
+ 
+     @Override
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/BedrockEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/BedrockEntityResolver.java
+index f9b67ae..3e5e363 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/BedrockEntityResolver.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/BedrockEntityResolver.java
+@@ -26,7 +26,7 @@ public class BedrockEntityResolver extends EntityResolver<BedrockResolvers, Comp
+      * @param resolvers the resolvers to use.
+      */
+     public BedrockEntityResolver(Version version, BedrockResolvers resolvers) {
+-        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying());
++        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying() || resolvers.converter().shouldPreserveUnknownEntities());
+     }
+ 
+     @Override
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/writer/BedrockColumnWriter.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/writer/BedrockColumnWriter.java
+index 1aa3a47..433b8d1 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/writer/BedrockColumnWriter.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/writer/BedrockColumnWriter.java
+@@ -10,6 +10,7 @@ import com.hivemc.chunker.conversion.handlers.pretransform.manager.PreTransformM
+ import com.hivemc.chunker.conversion.intermediate.column.ChunkerColumn;
+ import com.hivemc.chunker.conversion.intermediate.column.biome.ChunkerBiome;
+ import com.hivemc.chunker.conversion.intermediate.column.blockentity.BlockEntity;
++import com.hivemc.chunker.conversion.intermediate.column.blockentity.UnknownBlockEntity;
+ import com.hivemc.chunker.conversion.intermediate.column.chunk.ChunkerChunk;
+ import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.ChunkerBlockIdentifier;
+ import com.hivemc.chunker.conversion.intermediate.column.entity.Entity;
+@@ -354,7 +355,17 @@ public class BedrockColumnWriter implements ColumnWriter {
+     protected CompoundTag writeBlockEntity(ChunkerColumn chunkerColumn, BlockEntity blockEntity) {
+         Optional<CompoundTag> compoundTag = resolvers.blockEntityResolver().from(blockEntity);
+         if (compoundTag.isPresent()) {
+-            return compoundTag.get();
++            CompoundTag output = compoundTag.get();
++
++            // Write NetEase ModBlock
++            if (blockEntity instanceof UnknownBlockEntity unknownBlockEntity && !unknownBlockEntity.getType().startsWith("minecraft:")) {
++                output.put("id", "ModBlock");
++                output.put("exData", new CompoundTag());
++                output.put("_blockName", unknownBlockEntity.getType());
++                long uniqueEntityID = parent.generateUniqueEntityID();
++                output.put("_uniqueId", uniqueEntityID);
++            }
++            return output;
+         } else {
+             // Log as missing
+             converter.logMissingMapping(Converter.MissingMappingType.BLOCK_ENTITY, blockEntity.getClass().getSimpleName());
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/JavaBlockEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/JavaBlockEntityResolver.java
+index 2fb5caf..7c5ba1b 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/JavaBlockEntityResolver.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/JavaBlockEntityResolver.java
+@@ -29,7 +29,7 @@ public class JavaBlockEntityResolver extends BlockEntityResolver<JavaResolvers,
+      * @param resolvers the resolvers to use.
+      */
+     public JavaBlockEntityResolver(Version version, JavaResolvers resolvers) {
+-        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying());
++        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying() || resolvers.converter().shouldPreserveUnknownBlockEntities());
+     }
+ 
+     @Override
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/legacy/JavaLegacyBlockEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/legacy/JavaLegacyBlockEntityResolver.java
+index 2021445..c837c41 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/legacy/JavaLegacyBlockEntityResolver.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/legacy/JavaLegacyBlockEntityResolver.java
+@@ -62,7 +62,7 @@ public class JavaLegacyBlockEntityResolver extends BlockEntityResolver<JavaResol
+      * @param resolvers the resolvers to use.
+      */
+     public JavaLegacyBlockEntityResolver(Version version, JavaResolvers resolvers) {
+-        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying());
++        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying() || resolvers.converter().shouldPreserveUnknownBlockEntities());
+     }
+ 
+     @Override
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/JavaEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/JavaEntityResolver.java
+index b988ce1..5b2f6c8 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/JavaEntityResolver.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/JavaEntityResolver.java
+@@ -26,7 +26,7 @@ public class JavaEntityResolver extends EntityResolver<JavaResolvers, CompoundTa
+      * @param resolvers the resolvers to use.
+      */
+     public JavaEntityResolver(Version version, JavaResolvers resolvers) {
+-        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying());
++        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying() || resolvers.converter().shouldPreserveUnknownEntities());
+     }
+ 
+     @Override
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/legacy/JavaLegacyEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/legacy/JavaLegacyEntityResolver.java
+index db53982..2016676 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/legacy/JavaLegacyEntityResolver.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/legacy/JavaLegacyEntityResolver.java
+@@ -23,7 +23,7 @@ public class JavaLegacyEntityResolver extends EntityResolver<JavaResolvers, Comp
+      * @param resolvers the resolvers to use.
+      */
+     public JavaLegacyEntityResolver(Version version, JavaResolvers resolvers) {
+-        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying());
++        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying() || resolvers.converter().shouldPreserveUnknownEntities());
+     }
+ 
+     @Override
+-- 
+2.47.0.windows.2
+
