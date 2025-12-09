@@ -1,0 +1,4 @@
+[submodule "Chunker"]
+	path = Chunker
+	url = https://github.com/HiveGamesOSS/Chunker.git
+	branch = dependabot/github_actions/azure/trusted-signing-action-0.5.11
