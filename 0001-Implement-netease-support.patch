@@ -20,7 +20,8 @@ Subject: [PATCH] Implement netease support
  .../legacy/JavaLegacyBlockEntityResolver.java |   2 +-
  .../resolver/entity/JavaEntityResolver.java   |   2 +-
  .../legacy/JavaLegacyEntityResolver.java      |   2 +-
- 16 files changed, 185 insertions(+), 48 deletions(-)
+ .../encoding/java/util/FontUtil.java          |   6 +-
+ 17 files changed, 188 insertions(+), 49 deletions(-)
 
 diff --git a/app/electron/src/session.js b/app/electron/src/session.js
 index 6957d20..72dd4fe 100644
@@ -501,8 +502,33 @@ index db53982..2016676 100644
 -        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying());
 +        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying() || resolvers.converter().shouldPreserveUnknownEntities());
      }
- 
+
      @Override
--- 
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/FontUtil.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/FontUtil.java
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/FontUtil.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/FontUtil.java
+@@ -1,6 +1,5 @@
+ package com.hivemc.chunker.conversion.encoding.java.util;
+
+-import com.google.common.io.Resources;
+ import com.google.gson.JsonArray;
+ import com.google.gson.JsonElement;
+ import com.google.gson.JsonParser;
+@@ -23,8 +22,12 @@ public class FontUtil {
+
+     static {
+         // Load the code point to width map
+-        try (InputStream stream = Resources.getResource("java/default_font_width_codepoints.json").openStream();
+-             InputStreamReader inputStreamReader = new InputStreamReader(stream)) {
++        try (InputStream rawStream = FontUtil.class.getClassLoader().getResourceAsStream("java/default_font_width_codepoints.json");
++             InputStreamReader inputStreamReader = rawStream != null ? new InputStreamReader(rawStream) : null) {
++            if (inputStreamReader == null) {
++                throw new IOException("Resource not found: java/default_font_width_codepoints.json");
++            }
++
+             JsonArray nestedCodePoints = JsonParser.parseReader(inputStreamReader).getAsJsonArray();
+
+             // Loop through each width array and add the codepoints to our lookup
+--
 2.47.0.windows.2
 
