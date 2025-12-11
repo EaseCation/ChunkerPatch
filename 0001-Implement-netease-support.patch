@@ -4,30 +4,11 @@ Date: Tue, 9 Dec 2025 16:26:34 +0800
 Subject: [PATCH] Implement netease support
 
 ---
- app/electron/src/session.js                   |   2 +
- .../schemas/converter_settings.schema.json    |  22 ++++
- app/ui/src/components/app.js                  |   2 +
- .../settings/tab/converterSettingsTab.js      |  12 ++
- .../main/java/com/hivemc/chunker/cli/CLI.java |  14 +++
- .../chunker/cli/messenger/Messenger.java      |   2 +
- .../messaging/request/ConvertRequest.java     | 110 +++++++++++-------
- .../chunker/conversion/WorldConverter.java    |  30 +++++
- .../conversion/encoding/base/Converter.java   |  14 +++
- .../BedrockBlockEntityResolver.java           |   2 +-
- .../entity/BedrockEntityResolver.java         |   2 +-
- .../base/writer/BedrockColumnWriter.java      |  13 ++-
- .../blockentity/JavaBlockEntityResolver.java  |   2 +-
- .../legacy/JavaLegacyBlockEntityResolver.java |   2 +-
- .../resolver/entity/JavaEntityResolver.java   |   2 +-
- .../legacy/JavaLegacyEntityResolver.java      |   2 +-
- .../encoding/java/util/FontUtil.java          |   6 +-
- 17 files changed, 188 insertions(+), 49 deletions(-)
-
 diff --git a/app/electron/src/session.js b/app/electron/src/session.js
-index 6957d20..72dd4fe 100644
+index b73d9ee..60feb48 100644
 --- a/app/electron/src/session.js
 +++ b/app/electron/src/session.js
-@@ -710,6 +710,8 @@ export class Session {
+@@ -709,6 +709,8 @@ export class Session {
              customIdentifiers: !data.hasOwnProperty("customIdentifiers") || data["customIdentifiers"],
              skipBlockConnections: data.hasOwnProperty("blockConnections") && !data["blockConnections"],
              enableCompact: !data.hasOwnProperty("enableCompact") || data["enableCompact"],
@@ -113,7 +94,7 @@ index 3475f3e..ebf1b5f 100644
                  "display": "Discard Empty Chunks",
                  "name": "discardEmptyChunks",
 diff --git a/cli/src/main/java/com/hivemc/chunker/cli/CLI.java b/cli/src/main/java/com/hivemc/chunker/cli/CLI.java
-index 406bbde..7ed035f 100644
+index a6f5680..bb22d11 100644
 --- a/cli/src/main/java/com/hivemc/chunker/cli/CLI.java
 +++ b/cli/src/main/java/com/hivemc/chunker/cli/CLI.java
 @@ -110,6 +110,18 @@ public class CLI implements Runnable {
@@ -145,7 +126,7 @@ index 406bbde..7ed035f 100644
              // Create the reader / writer (note: converter settings cannot be set after this point)
              Optional<? extends LevelReader> reader = EncodingType.findReader(inputDirectory, worldConverter);
 diff --git a/cli/src/main/java/com/hivemc/chunker/cli/messenger/Messenger.java b/cli/src/main/java/com/hivemc/chunker/cli/messenger/Messenger.java
-index 31e5f70..b72f56b 100644
+index f2d2dec..63e07d0 100644
 --- a/cli/src/main/java/com/hivemc/chunker/cli/messenger/Messenger.java
 +++ b/cli/src/main/java/com/hivemc/chunker/cli/messenger/Messenger.java
 @@ -234,6 +234,8 @@ public class Messenger {
@@ -316,7 +297,7 @@ index 9bc1acc..6f8a1c5 100644
       * Whether empty chunks should be discarded instead of written.
       *
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java b/cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java
-index 0079d9b..eacf6e6 100644
+index dce799d..3586325 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/WorldConverter.java
 @@ -86,6 +86,8 @@ public class WorldConverter implements Converter {
@@ -353,7 +334,7 @@ index 0079d9b..eacf6e6 100644
      /**
       * Set whether empty chunks should be removed.
       *
-@@ -393,6 +413,16 @@ public class WorldConverter implements Converter {
+@@ -401,6 +421,16 @@ public class WorldConverter implements Converter {
          return allowNBTCopying;
      }
  
@@ -396,7 +377,7 @@ index c59f1b3..0496871 100644
       * Whether custom identifiers should be processed.
       *
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/blockentity/BedrockBlockEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/blockentity/BedrockBlockEntityResolver.java
-index 70f50f9..a049f19 100644
+index e53ae22..babe2d3 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/blockentity/BedrockBlockEntityResolver.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/blockentity/BedrockBlockEntityResolver.java
 @@ -33,7 +33,7 @@ public class BedrockBlockEntityResolver extends BlockEntityResolver<BedrockResol
@@ -409,7 +390,7 @@ index 70f50f9..a049f19 100644
  
      @Override
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/BedrockEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/BedrockEntityResolver.java
-index f9b67ae..3e5e363 100644
+index aea4e14..cef7306 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/BedrockEntityResolver.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/BedrockEntityResolver.java
 @@ -26,7 +26,7 @@ public class BedrockEntityResolver extends EntityResolver<BedrockResolvers, Comp
@@ -421,8 +402,85 @@ index f9b67ae..3e5e363 100644
      }
  
      @Override
+diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/handlers/BedrockEntityHandler.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/handlers/BedrockEntityHandler.java
+index fd10269..3cf8d4e 100644
+--- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/handlers/BedrockEntityHandler.java
++++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/resolver/entity/handlers/BedrockEntityHandler.java
+@@ -7,8 +7,10 @@ import com.hivemc.chunker.nbt.TagType;
+ import com.hivemc.chunker.nbt.tags.Tag;
+ import com.hivemc.chunker.nbt.tags.collection.CompoundTag;
+ import com.hivemc.chunker.nbt.tags.collection.ListTag;
++import com.hivemc.chunker.nbt.tags.primitive.DoubleTag;
+ import com.hivemc.chunker.nbt.tags.primitive.FloatTag;
+ import org.jetbrains.annotations.NotNull;
++import org.jetbrains.annotations.Nullable;
+ 
+ import java.util.List;
+ import java.util.Map;
+@@ -23,6 +25,40 @@ public class BedrockEntityHandler extends EntityHandler<BedrockResolvers, Compou
+         });
+     }
+ 
++    /**
++     * Read a list of floats from a tag, supporting both FloatTag and DoubleTag list types.
++     * NetEase Bedrock edition uses DoubleTag for entity positions while vanilla uses FloatTag.
++     *
++     * @param input the compound tag to read from
++     * @param name the name of the list tag
++     * @return list of float values, or null if not found
++     */
++    @Nullable
++    private static List<Float> readFloatList(CompoundTag input, String name) {
++        Tag<?> tag = input.get(name, Tag.class);
++        if (!(tag instanceof ListTag<?, ?> listTag)) {
++            return null;
++        }
++
++        TagType listType = listTag.getListType();
++        if (listType == TagType.FLOAT) {
++            @SuppressWarnings("unchecked")
++            ListTag<FloatTag, Float> floatList = (ListTag<FloatTag, Float>) listTag;
++            return floatList.toList();
++        } else if (listType == TagType.DOUBLE) {
++            // NetEase Bedrock uses DoubleTag for entity positions
++            @SuppressWarnings("unchecked")
++            ListTag<DoubleTag, Double> doubleList = (ListTag<DoubleTag, Double>) listTag;
++            List<Double> doubles = doubleList.toList();
++            if (doubles == null) return null;
++            return doubles.stream()
++                    .map(d -> d != null ? d.floatValue() : 0f)
++                    .toList();
++        }
++
++        return null;
++    }
++
+     @Override
+     public void read(@NotNull BedrockResolvers resolvers, @NotNull CompoundTag input, @NotNull Entity entity) {
+         // Save original NBT
+@@ -30,16 +66,16 @@ public class BedrockEntityHandler extends EntityHandler<BedrockResolvers, Compou
+             entity.setOriginalNBT(input);
+         }
+ 
+-        // Position
+-        List<Float> position = input.getListValues("Pos", FloatTag.class, null);
++        // Position (supports both FloatTag and DoubleTag for NetEase compatibility)
++        List<Float> position = readFloatList(input, "Pos");
+         if (position != null && position.size() >= 3) {
+             entity.setPositionX(position.get(0));
+             entity.setPositionY(position.get(1));
+             entity.setPositionZ(position.get(2));
+         }
+ 
+-        // Motion
+-        List<Float> motion = input.getListValues("Motion", FloatTag.class, null);
++        // Motion (supports both FloatTag and DoubleTag for NetEase compatibility)
++        List<Float> motion = readFloatList(input, "Motion");
+         if (motion != null && motion.size() >= 3) {
+             entity.setMotionX(motion.get(0));
+             entity.setMotionY(motion.get(1));
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/writer/BedrockColumnWriter.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/writer/BedrockColumnWriter.java
-index 1aa3a47..433b8d1 100644
+index 08cbf9c..4ea4605 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/writer/BedrockColumnWriter.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/bedrock/base/writer/BedrockColumnWriter.java
 @@ -10,6 +10,7 @@ import com.hivemc.chunker.conversion.handlers.pretransform.manager.PreTransformM
@@ -453,10 +511,10 @@ index 1aa3a47..433b8d1 100644
              // Log as missing
              converter.logMissingMapping(Converter.MissingMappingType.BLOCK_ENTITY, blockEntity.getClass().getSimpleName());
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/JavaBlockEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/JavaBlockEntityResolver.java
-index 2fb5caf..7c5ba1b 100644
+index f59ec76..7b148cf 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/JavaBlockEntityResolver.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/JavaBlockEntityResolver.java
-@@ -29,7 +29,7 @@ public class JavaBlockEntityResolver extends BlockEntityResolver<JavaResolvers,
+@@ -30,7 +30,7 @@ public class JavaBlockEntityResolver extends BlockEntityResolver<JavaResolvers,
       * @param resolvers the resolvers to use.
       */
      public JavaBlockEntityResolver(Version version, JavaResolvers resolvers) {
@@ -466,10 +524,10 @@ index 2fb5caf..7c5ba1b 100644
  
      @Override
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/legacy/JavaLegacyBlockEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/legacy/JavaLegacyBlockEntityResolver.java
-index 2021445..c837c41 100644
+index 4a20c29..b11d380 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/legacy/JavaLegacyBlockEntityResolver.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/blockentity/legacy/JavaLegacyBlockEntityResolver.java
-@@ -62,7 +62,7 @@ public class JavaLegacyBlockEntityResolver extends BlockEntityResolver<JavaResol
+@@ -66,7 +66,7 @@ public class JavaLegacyBlockEntityResolver extends BlockEntityResolver<JavaResol
       * @param resolvers the resolvers to use.
       */
      public JavaLegacyBlockEntityResolver(Version version, JavaResolvers resolvers) {
@@ -479,7 +537,7 @@ index 2021445..c837c41 100644
  
      @Override
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/JavaEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/JavaEntityResolver.java
-index b988ce1..5b2f6c8 100644
+index 7d90280..4fc68d4 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/JavaEntityResolver.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/JavaEntityResolver.java
 @@ -26,7 +26,7 @@ public class JavaEntityResolver extends EntityResolver<JavaResolvers, CompoundTa
@@ -492,7 +550,7 @@ index b988ce1..5b2f6c8 100644
  
      @Override
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/legacy/JavaLegacyEntityResolver.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/legacy/JavaLegacyEntityResolver.java
-index db53982..2016676 100644
+index 5058e4f..073d258 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/legacy/JavaLegacyEntityResolver.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/base/resolver/entity/legacy/JavaLegacyEntityResolver.java
 @@ -23,7 +23,7 @@ public class JavaLegacyEntityResolver extends EntityResolver<JavaResolvers, Comp
@@ -502,20 +560,21 @@ index db53982..2016676 100644
 -        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying());
 +        super(version, resolvers, resolvers.converter().shouldAllowNBTCopying() || resolvers.converter().shouldPreserveUnknownEntities());
      }
-
+ 
      @Override
 diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/FontUtil.java b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/FontUtil.java
+index 32cc67a..7a61c8c 100644
 --- a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/FontUtil.java
 +++ b/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/FontUtil.java
 @@ -1,6 +1,5 @@
  package com.hivemc.chunker.conversion.encoding.java.util;
-
+ 
 -import com.google.common.io.Resources;
  import com.google.gson.JsonArray;
  import com.google.gson.JsonElement;
  import com.google.gson.JsonParser;
 @@ -23,8 +22,12 @@ public class FontUtil {
-
+ 
      static {
          // Load the code point to width map
 -        try (InputStream stream = Resources.getResource("java/default_font_width_codepoints.json").openStream();
@@ -527,8 +586,9 @@ diff --git a/cli/src/main/java/com/hivemc/chunker/conversion/encoding/java/util/
 +            }
 +
              JsonArray nestedCodePoints = JsonParser.parseReader(inputStreamReader).getAsJsonArray();
-
+ 
              // Loop through each width array and add the codepoints to our lookup
---
+
+-- 
 2.47.0.windows.2
 
